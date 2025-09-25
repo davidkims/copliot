@@ -171,6 +171,14 @@ jobs:
           echo "ART_DIR=$RUNNER_TEMP/artifacts"   >> "$GITHUB_ENV"
           echo "DL_DIR=$RUNNER_TEMP/downloads"    >> "$GITHUB_ENV"
           mkdir -p "$LOG_DIR" "$ART_DIR" "$DL_DIR"
+
+      - name: Compute safe service name
+        run: |
+          RAW="${{ matrix.service }}"
+          SAFE=$(printf "%s" "$RAW" | sed -e 's|[ /:\\]|_|g' -e 's|__*|_|g' -e 's|^_$|root|')
+          [ -n "$SAFE" ] || SAFE="root"
+          echo "SAFE_SERVICE=$SAFE" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
 
       # ===== Toolchains =====
@@ -207,10 +215,10 @@ jobs:
           echoe(){ printf '%s %s\n' "${ECHO_OK}" "$*"; }
           warn(){  printf '%s %s\n' "${ECHO_WARN}" "$*"; }
           fail(){  printf '%s %s\n' "${ECHO_FAIL}" "$*"; }
-          logf(){  printf '%s\n' "$*" | tee -a "${LOG_DIR}/echo-${{ matrix.service//\//_ }}.log"; }
+          logf(){  printf '%s\n' "$*" | tee -a "${LOG_DIR}/echo-${SAFE_SERVICE}.log"; }
           run_cmd(){
             logf "▶ $*"
-            eval "$@" 2>&1 | tee -a "${LOG_DIR}/echo-${{ matrix.service//\//_ }}.log"
+            eval "$@" 2>&1 | tee -a "${LOG_DIR}/echo-${SAFE_SERVICE}.log"
             local rc=${PIPESTATUS[0]}
             if [ $rc -eq 0 ]; then echoe "DONE: $*"; else warn "RC=$rc ← $*"; fi
             return $rc
@@ -315,16 +323,16 @@ jobs:
           set +e
           if [ -f package.json ]; then
             case "${PM}" in
-              pnpm) run_cmd "pnpm i | tee '${LOG_DIR}/node-install-${{ matrix.service//\//_ }}.log'";;
-              yarn) run_cmd "yarn install --immutable | tee '${LOG_DIR}/node-install-${{ matrix.service//\//_ }}.log'";;
-              npm)  run_cmd "npm ci || npm i | tee '${LOG_DIR}/node-install-${{ matrix.service//\//_ }}.log'";;
+              pnpm) run_cmd "pnpm i | tee '${LOG_DIR}/node-install-${SAFE_SERVICE}.log'";;
+              yarn) run_cmd "yarn install --immutable | tee '${LOG_DIR}/node-install-${SAFE_SERVICE}.log'";;
+              npm)  run_cmd "npm ci || npm i | tee '${LOG_DIR}/node-install-${SAFE_SERVICE}.log'";;
             esac
-            jq -e '.scripts.build' package.json >/dev/null 2>&1 && run_cmd "${PM} run build | tee '${LOG_DIR}/node-build-${{ matrix.service//\//_ }}.log'"
+            jq -e '.scripts.build' package.json >/dev/null 2>&1 && run_cmd "${PM} run build | tee '${LOG_DIR}/node-build-${SAFE_SERVICE}.log'"
             if [ "${RUN_TESTS}" = "true" ] && jq -e '.scripts.test' package.json >/dev/null 2>&1; then
-              run_cmd "${PM} test --if-present | tee '${LOG_DIR}/node-test-${{ matrix.service//\//_ }}.log'"
+              run_cmd "${PM} test --if-present | tee '${LOG_DIR}/node-test-${SAFE_SERVICE}.log'"
             fi
-            [ -d dist ]  && run_cmd "cp -r dist  '${ART_DIR}/node-dist-${{ matrix.service//\//_ }}'"
-            [ -d build ] && run_cmd "cp -r build '${ART_DIR}/node-build-${{ matrix.service//\//_ }}'"
+            [ -d dist ]  && run_cmd "cp -r dist  '${ART_DIR}/node-dist-${SAFE_SERVICE}'"
+            [ -d build ] && run_cmd "cp -r build '${ART_DIR}/node-build-${SAFE_SERVICE}'"
           else
             warn "no package.json — skip node"
           fi
@@ -339,7 +347,7 @@ jobs:
           . /tmp/echo_helpers.sh
           set +e
           if [ -f pom.xml ]; then
-            run_cmd "mvn -B -ntp -Dstyle.color=always -DskipTests=$([ \"$RUN_TESTS\" = 'true' ] && echo 'false' || echo 'true') clean package | tee '${LOG_DIR}/maven-${{ matrix.service//\//_ }}.log'"
+            run_cmd "mvn -B -ntp -Dstyle.color=always -DskipTests=$([ \"$RUN_TESTS\" = 'true' ] && echo 'false' || echo 'true') clean package | tee '${LOG_DIR}/maven-${SAFE_SERVICE}.log'"
             find . -type f -path "*/target/*.jar" -exec cp -v {} "${ART_DIR}/" \; || true
           else
             warn "no pom.xml — skip maven"
@@ -356,9 +364,9 @@ jobs:
           if compgen -G "build.gradle*" >/dev/null; then
             chmod +x ./gradlew 2>/dev/null || true
             if [ -x ./gradlew ]; then
-              run_cmd "./gradlew build $([ \"$RUN_TESTS\" = 'false' ] && echo '-x test') | tee '${LOG_DIR}/gradle-${{ matrix.service//\//_ }}.log'"
+              run_cmd "./gradlew build $([ \"$RUN_TESTS\" = 'false' ] && echo '-x test') | tee '${LOG_DIR}/gradle-${SAFE_SERVICE}.log'"
             else
-              run_cmd "gradle build $([ \"$RUN_TESTS\" = 'false' ] && echo '-x test') | tee '${LOG_DIR}/gradle-${{ matrix.service//\//_ }}.log'"
+              run_cmd "gradle build $([ \"$RUN_TESTS\" = 'false' ] && echo '-x test') | tee '${LOG_DIR}/gradle-${SAFE_SERVICE}.log'"
             fi
             find . -type f -path "*/build/libs/*.jar" -exec cp -v {} "${ART_DIR}/" \; || true
           else
@@ -377,14 +385,14 @@ jobs:
           if [ -f pyproject.toml ] || [ -f requirements.txt ]; then
             run_cmd "python -m venv .venv && . .venv/bin/activate && python -m pip install -U pip wheel"
             if grep -qiE 'tool\.poetry' pyproject.toml 2>/dev/null; then
-              run_cmd "pip install poetry && poetry install --no-interaction | tee '${LOG_DIR}/poetry-${{ matrix.service//\//_ }}.log'"
-              [ "${RUN_TESTS}" = "true" ] && run_cmd "poetry run pytest -q | tee '${LOG_DIR}/pytest-${{ matrix.service//\//_ }}.log'"
+              run_cmd "pip install poetry && poetry install --no-interaction | tee '${LOG_DIR}/poetry-${SAFE_SERVICE}.log'"
+              [ "${RUN_TESTS}" = "true" ] && run_cmd "poetry run pytest -q | tee '${LOG_DIR}/pytest-${SAFE_SERVICE}.log'"
             else
               if [ -f requirements.txt ]; then
-                run_cmd "pip install -r requirements.txt | tee '${LOG_DIR}/pip-${{ matrix.service//\//_ }}.log'"
+                run_cmd "pip install -r requirements.txt | tee '${LOG_DIR}/pip-${SAFE_SERVICE}.log'"
               fi
-              [ -f setup.py ] && run_cmd "python setup.py sdist bdist_wheel | tee '${LOG_DIR}/python-build-${{ matrix.service//\//_ }}.log'"
-              [ "${RUN_TESTS}" = "true" ] && run_cmd "pytest -q | tee '${LOG_DIR}/pytest-${{ matrix.service//\//_ }}.log'"
+              [ -f setup.py ] && run_cmd "python setup.py sdist bdist_wheel | tee '${LOG_DIR}/python-build-${SAFE_SERVICE}.log'"
+              [ "${RUN_TESTS}" = "true" ] && run_cmd "pytest -q | tee '${LOG_DIR}/pytest-${SAFE_SERVICE}.log'"
             fi
             find . -type f -path "*/dist/*" -exec cp -v {} "${ART_DIR}/" \; || true
           else
@@ -401,9 +409,9 @@ jobs:
           . /tmp/echo_helpers.sh
           set +e
           if [ -f go.mod ]; then
-            run_cmd "go mod download | tee '${LOG_DIR}/go-mod-${{ matrix.service//\//_ }}.log'"
-            run_cmd "go build ./... | tee '${LOG_DIR}/go-build-${{ matrix.service//\//_ }}.log'"
-            [ "${RUN_TESTS}" = "true" ] && run_cmd "go test ./... -v | tee '${LOG_DIR}/go-test-${{ matrix.service//\//_ }}.log'"
+            run_cmd "go mod download | tee '${LOG_DIR}/go-mod-${SAFE_SERVICE}.log'"
+            run_cmd "go build ./... | tee '${LOG_DIR}/go-build-${SAFE_SERVICE}.log'"
+            [ "${RUN_TESTS}" = "true" ] && run_cmd "go test ./... -v | tee '${LOG_DIR}/go-test-${SAFE_SERVICE}.log'"
           else
             warn "no go.mod — skip go"
           fi
@@ -418,8 +426,8 @@ jobs:
           . /tmp/echo_helpers.sh
           set +e
           if [ -f Cargo.toml ]; then
-            run_cmd "cargo build --locked | tee '${LOG_DIR}/cargo-build-${{ matrix.service//\//_ }}.log'"
-            [ "${RUN_TESTS}" = "true" ] && run_cmd "cargo test --locked | tee '${LOG_DIR}/cargo-test-${{ matrix.service//\//_ }}.log'"
+            run_cmd "cargo build --locked | tee '${LOG_DIR}/cargo-build-${SAFE_SERVICE}.log'"
+            [ "${RUN_TESTS}" = "true" ] && run_cmd "cargo test --locked | tee '${LOG_DIR}/cargo-test-${SAFE_SERVICE}.log'"
             find . -type f -path "*/target/release/*" -maxdepth 1 -exec cp -v {} "${ART_DIR}/" \; 2>/dev/null || true
           else
             warn "no Cargo.toml — skip rust"
@@ -435,9 +443,9 @@ jobs:
           . /tmp/echo_helpers.sh
           set +e
           if compgen -G "*.sln" >/dev/null || compgen -G "*.csproj" >/dev/null; then
-            run_cmd "dotnet restore | tee '${LOG_DIR}/dotnet-restore-${{ matrix.service//\//_ }}.log'"
-            run_cmd "dotnet build -c Release | tee '${LOG_DIR}/dotnet-build-${{ matrix.service//\//_ }}.log'"
-            [ "${RUN_TESTS}" = "true" ] && run_cmd "dotnet test -c Release --no-build | tee '${LOG_DIR}/dotnet-test-${{ matrix.service//\//_ }}.log'"
+            run_cmd "dotnet restore | tee '${LOG_DIR}/dotnet-restore-${SAFE_SERVICE}.log'"
+            run_cmd "dotnet build -c Release | tee '${LOG_DIR}/dotnet-build-${SAFE_SERVICE}.log'"
+            [ "${RUN_TESTS}" = "true" ] && run_cmd "dotnet test -c Release --no-build | tee '${LOG_DIR}/dotnet-test-${SAFE_SERVICE}.log'"
             find . -type f -path "*/bin/Release/*" -exec cp -v {} "${ART_DIR}/" \; || true
           else
             warn "no .NET project — skip dotnet"
@@ -458,7 +466,7 @@ jobs:
             IMAGE="${REG}/${NAME}"
             TAG="${IMAGE}:sha-${GITHUB_SHA::7}"
             run_cmd "docker build -t '${TAG}' ."
-            echo "${TAG}" > "${LOG_DIR}/image-${{ matrix.service//\//_ }}.txt"
+            echo "${TAG}" > "${LOG_DIR}/image-${SAFE_SERVICE}.txt"
           else
             warn "no Dockerfile* — skip container"
           fi
@@ -512,7 +520,7 @@ jobs:
           . /tmp/echo_helpers.sh
           set +e
           if command -v kubeconform >/dev/null 2>&1 && ls k8s kubernetes -d 1>/dev/null 2>&1; then
-            run_cmd "find k8s kubernetes -type f \\( -name '*.yml' -o -name '*.yaml' \\) -print0 2>/dev/null | xargs -0 -I{} kubeconform -summary -output json {} | tee '${LOG_DIR}/kubeconform-${{ matrix.service//\//_ }}.json'"
+            run_cmd "find k8s kubernetes -type f \\( -name '*.yml' -o -name '*.yaml' \\) -print0 2>/dev/null | xargs -0 -I{} kubeconform -summary -output json {} | tee '${LOG_DIR}/kubeconform-${SAFE_SERVICE}.json'"
           else
             warn "kubeconform not ready or no k8s dir — skip"
           fi
@@ -521,11 +529,11 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: service-${{ matrix.service || 'root' }}
+          name: service-${{ env.SAFE_SERVICE }}
           path: |
             ${{ env.ART_DIR }}/**
             ${{ env.DL_DIR }}/**/*
-            ${{ env.LOG_DIR }}/echo-${{ matrix.service && matrix.service != '' && matrix.service || 'root' }}.log
+            ${{ env.LOG_DIR }}/echo-${{ env.SAFE_SERVICE }}.log
             ${{ env.LOG_DIR }}/node-*.log
             ${{ env.LOG_DIR }}/maven-*.log
             ${{ env.LOG_DIR }}/gradle-*.log
