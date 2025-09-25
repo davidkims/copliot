@@ -78,22 +78,46 @@ jobs:
     outputs:
       proceed: ${{ steps.flag.outputs.proceed }}
     steps:
-      - name: Set base dirs
+      - name: Bootstrap dirs & echo files (safe)
+        shell: bash
         run: |
-          echo "LOG_DIR=$RUNNER_TEMP/runtime-logs" >> "$GITHUB_ENV"
-          echo "ART_DIR=$RUNNER_TEMP/artifacts"   >> "$GITHUB_ENV"
-          echo "DL_DIR=$RUNNER_TEMP/downloads"    >> "$GITHUB_ENV"
-          mkdir -p "$LOG_DIR" "$ART_DIR" "$DL_DIR"
+          set -Eeuo pipefail
+          : "${RUNNER_TEMP:=/tmp}"
+          LOG_DIR="${RUNNER_TEMP}/runtime-logs"
+          ART_DIR="${RUNNER_TEMP}/artifacts"
+          DL_DIR="${RUNNER_TEMP}/downloads"
+          ECHO_DIR=".github/echo"
+          mkdir -p "$LOG_DIR" "$ART_DIR" "$DL_DIR" "$ECHO_DIR" "$ECHO_DIR/logs" "$ECHO_DIR/reports"
+          : > "$LOG_DIR/.keep"; : > "$ART_DIR/.keep"; : > "$DL_DIR/.keep"
+          printf 'EchoOps initialized at %sZ\n' "$(date -u +%F-%T)" > "$ECHO_DIR/logs/init.txt"
+          : > "$ECHO_DIR/reports/.keep"; : > "$LOG_DIR/echo-run.log"; : > "$LOG_DIR/guard.out"; : > "$LOG_DIR/placeholder.txt"
+          {
+            echo "LOG_DIR=$LOG_DIR"
+            echo "ART_DIR=$ART_DIR"
+            echo "DL_DIR=$DL_DIR"
+            echo "ECHO_DIR=$ECHO_DIR"
+          } >> "$GITHUB_ENV"
+          {
+            echo "### Bootstrap"
+            echo "- LOG_DIR: \`$LOG_DIR\`"
+            echo "- ART_DIR: \`$ART_DIR\`"
+            echo "- DL_DIR: \`$DL_DIR\`"
+            echo "- ECHO_DIR: \`$ECHO_DIR\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - id: flag
+        name: Decide proceed (skip Copilot bot)
+        shell: bash
         run: |
           if [ "${{ github.actor }}" = "copilot-swe-agent[bot]" ]; then
             echo "proceed=false" >> "$GITHUB_OUTPUT"
-            echo "copilot bot → skip" | tee -a "${LOG_DIR}/guard.txt"
+            echo "copilot bot → skip" | tee -a "${LOG_DIR}/guard.out"
           else
             echo "proceed=true" >> "$GITHUB_OUTPUT"
-            echo "run by ${{ github.actor }}" | tee -a "${LOG_DIR}/guard.txt"
+            echo "run by ${{ github.actor }}" | tee -a "${LOG_DIR}/guard.out"
           fi
-      - name: Upload guard logs
+
+      - name: Upload guard logs (always)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
@@ -110,13 +134,27 @@ jobs:
     outputs:
       matrix: ${{ steps.mk.outputs.matrix }}
     steps:
-      - name: Prep dirs
+      - name: Bootstrap dirs & echo files (safe)
+        shell: bash
         run: |
-          echo "LOG_DIR=$RUNNER_TEMP/runtime-logs" >> "$GITHUB_ENV"
-          echo "ART_DIR=$RUNNER_TEMP/artifacts"   >> "$GITHUB_ENV"
-          echo "DL_DIR=$RUNNER_TEMP/downloads"    >> "$GITHUB_ENV"
-          mkdir -p "$LOG_DIR" "$ART_DIR" "$DL_DIR"
+          set -Eeuo pipefail
+          : "${RUNNER_TEMP:=/tmp}"
+          LOG_DIR="${RUNNER_TEMP}/runtime-logs"
+          ART_DIR="${RUNNER_TEMP}/artifacts"
+          DL_DIR="${RUNNER_TEMP}/downloads"
+          ECHO_DIR=".github/echo"
+          mkdir -p "$LOG_DIR" "$ART_DIR" "$DL_DIR" "$ECHO_DIR" "$ECHO_DIR/logs" "$ECHO_DIR/reports"
+          : > "$LOG_DIR/.keep"; : > "$ART_DIR/.keep"; : > "$DL_DIR/.keep"
+          : > "$LOG_DIR/echo-run.log"
+          {
+            echo "LOG_DIR=$LOG_DIR"
+            echo "ART_DIR=$ART_DIR"
+            echo "DL_DIR=$DL_DIR"
+            echo "ECHO_DIR=$ECHO_DIR"
+          } >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
+
       - id: mk
         name: Scan service dirs
         shell: bash
@@ -127,7 +165,6 @@ jobs:
           for g in "${GLOBS[@]}"; do
             for p in $g; do
               [ -d "$p" ] || continue
-              # 서비스로 간주: 대표 파일 중 하나라도 존재
               if compgen -G "$p/pom.xml" >/dev/null || \
                  compgen -G "$p/build.gradle*" >/dev/null || \
                  compgen -G "$p/package.json" >/dev/null || \
@@ -145,7 +182,8 @@ jobs:
           [[ ${#SERVICES[@]} -eq 0 ]] && SERVICES+=(".")
           jq -n --argjson arr "$(printf '%s\n' "${SERVICES[@]}" | jq -R . | jq -s .)" '{service: $arr}' | tee "${LOG_DIR}/services.json"
           echo "matrix=$(cat "${LOG_DIR}/services.json")" >> "$GITHUB_OUTPUT"
-      - name: Upload discovery logs
+
+      - name: Upload discovery logs (always)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
@@ -165,14 +203,27 @@ jobs:
     env:
       SERVICE_DIR: ${{ matrix.service }}
     steps:
-      - name: Prep dirs
+      - name: Bootstrap dirs & echo files (safe)
+        shell: bash
         run: |
-          echo "LOG_DIR=$RUNNER_TEMP/runtime-logs" >> "$GITHUB_ENV"
-          echo "ART_DIR=$RUNNER_TEMP/artifacts"   >> "$GITHUB_ENV"
-          echo "DL_DIR=$RUNNER_TEMP/downloads"    >> "$GITHUB_ENV"
-          mkdir -p "$LOG_DIR" "$ART_DIR" "$DL_DIR"
+          set -Eeuo pipefail
+          : "${RUNNER_TEMP:=/tmp}"
+          LOG_DIR="${RUNNER_TEMP}/runtime-logs"
+          ART_DIR="${RUNNER_TEMP}/artifacts"
+          DL_DIR="${RUNNER_TEMP}/downloads"
+          ECHO_DIR=".github/echo"
+          mkdir -p "$LOG_DIR" "$ART_DIR" "$DL_DIR" "$ECHO_DIR" "$ECHO_DIR/logs" "$ECHO_DIR/reports"
+          : > "$LOG_DIR/.keep"; : > "$ART_DIR/.keep"; : > "$DL_DIR/.keep"
+          : > "$LOG_DIR/echo-run.log"
+          {
+            echo "LOG_DIR=$LOG_DIR"
+            echo "ART_DIR=$ART_DIR"
+            echo "DL_DIR=$DL_DIR"
+            echo "ECHO_DIR=$ECHO_DIR"
+          } >> "$GITHUB_ENV"
 
       - name: Compute safe service name
+        shell: bash
         run: |
           RAW="${{ matrix.service }}"
           SAFE=$(printf "%s" "$RAW" | sed -e 's|[ /:\\]|_|g' -e 's|__*|_|g' -e 's|^_$|root|')
@@ -223,7 +274,6 @@ jobs:
             if [ $rc -eq 0 ]; then echoe "DONE: $*"; else warn "RC=$rc ← $*"; fi
             return $rc
           }
-          # domain whitelist + sha256 verify + robust curl
           curl_get(){
             local url="$1"; local out="$2"; local want_sha="$3"
             local allow="${ALLOW_DOMAINS_CSV:-}"
@@ -241,8 +291,7 @@ jobs:
                 dl.k8s.io|cdn.kernel.org|download.docker.com|download.jetbrains.com|\
                 go.dev|golang.org|python.org|files.pythonhosted.org|pypi.org|\
                 repo.maven.apache.org|downloads.apache.org|quay.io|ghcr.io|\
-                registry-1.docker.io|archive.apache.org)
-                  allowed=1;;
+                registry-1.docker.io|archive.apache.org) allowed=1;;
               esac
             fi
             if [ $allowed -ne 1 ]; then warn "blocked host: $host"; return 2; fi
@@ -555,13 +604,26 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - name: Prep dirs
+      - name: Bootstrap dirs & echo files (safe)
+        shell: bash
         run: |
-          echo "LOG_DIR=$RUNNER_TEMP/runtime-logs" >> "$GITHUB_ENV"
-          echo "ART_DIR=$RUNNER_TEMP/artifacts"   >> "$GITHUB_ENV"
-          echo "DL_DIR=$RUNNER_TEMP/downloads"    >> "$GITHUB_ENV"
+          set -Eeuo pipefail
+          : "${RUNNER_TEMP:=/tmp}"
+          LOG_DIR="${RUNNER_TEMP}/runtime-logs"
+          ART_DIR="${RUNNER_TEMP}/artifacts"
+          DL_DIR="${RUNNER_TEMP}/downloads"
+          ECHO_DIR=".github/echo"
           mkdir -p "$LOG_DIR" "$DL_DIR"
+          : > "$LOG_DIR/.keep"; : > "$DL_DIR/.keep"
+          {
+            echo "LOG_DIR=$LOG_DIR"
+            echo "ART_DIR=$ART_DIR"
+            echo "DL_DIR=$DL_DIR"
+            echo "ECHO_DIR=$ECHO_DIR"
+          } >> "$GITHUB_ENV"
+
       - name: Summary
+        shell: bash
         run: |
           {
             echo "## EchoOps MAX — Summary"
@@ -579,7 +641,8 @@ jobs:
             echo "- Docker push: **${{ inputs.docker_push }}**"
             echo "- K8s lint: **${{ inputs.k8s_lint }}**"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload final logs
+
+      - name: Upload final logs (always)
         uses: actions/upload-artifact@v4
         with:
           name: all-logs
