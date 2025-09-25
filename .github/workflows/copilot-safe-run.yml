@@ -1,147 +1,459 @@
-name: "🛡️ Copilot-Safe Run + Logs Always Upload"
+name: "🗒️ EchoOps — MEGA All-in-One (Guard+Build+Scan+Docker+K8s+Always-Logs)"
 
 on:
   workflow_dispatch:
     inputs:
       run_tests:
-        description: "샘플 작업/테스트 실행 여부"
+        description: "테스트 실행"
         required: true
-        default: "true"
         type: choice
         options: ["true", "false"]
+        default: "true"
+      verbose:
+        description: "자세한 로그"
+        required: true
+        type: choice
+        options: ["true", "false"]
+        default: "true"
       block_reason:
         description: "차단/중단 사유(비우면 정상 진행)"
         required: false
         default: ""
-      verbose:
-        description: "자세한 로그"
+      java_matrix:
+        description: "Java 매트릭스(17,21)"
         required: true
-        default: "true"
         type: choice
         options: ["true", "false"]
+        default: "false"
+      node_version:
+        description: "Node 버전(예: 20.x)"
+        required: false
+        default: "20.x"
+      enable_security_scan:
+        description: "보안 스캔(SBOM/취약점)"
+        required: true
+        type: choice
+        options: ["true", "false"]
+        default: "true"
+      docker_registry:
+        description: "레지스트리"
+        required: true
+        type: choice
+        options: ["docker.io", "ghcr.io", "quay.io"]
+        default: "docker.io"
+      docker_image:
+        description: "이미지 이름(user/app)"
+        required: false
+        default: "user/app"
+      k8s_lint:
+        description: "kubeconform 실행"
+        required: true
+        type: choice
+        options: ["true", "false"]
+        default: "true"
+      create_release:
+        description: "GitHub Release 번들(placeholder)"
+        required: true
+        type: choice
+        options: ["true", "false"]
+        default: "false"
+
   push:
     branches: ["main"]
 
-# 중복 실행 시 이전 런 자동 취소(원치 않으면 false)
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# 최소 권한 원칙
 permissions:
   contents: read
+  actions: read
+
+env:
+  LOG_DIR: ${{ runner.temp }}/runtime-logs
+  ART_DIR: ${{ runner.temp }}/artifacts
+  ECHO_DIR: .github/echo
 
 jobs:
   guard:
-    name: "Guard — 봇/중복/환경 체크"
+    name: "Guard — 봇/실행여부/환경"
     runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.decide.outputs.run }}
       reason: ${{ steps.decide.outputs.reason }}
     steps:
-      - name: "실행자 표시"
-        run: echo "actor=${{ github.actor }}"
-
-      - id: decide
-        name: "Copilot 봇 실행 시 스킵 결정"
+      - name: Echo Helpers 설치
         run: |
-          RUN="true"
-          REASON=""
+          mkdir -p "${{ env.LOG_DIR }}" "${{ env.ART_DIR }}"
+          cat <<'SH' > /tmp/echo_helpers.sh
+          set -o pipefail
+          echoe(){ printf '%s %s\n' "${ECHO_OK}" "$*"; }
+          warn(){  printf '%s %s\n' "${ECHO_WARN}" "$*"; }
+          fail(){  printf '%s %s\n' "${ECHO_FAIL}" "$*"; }
+          # 명령어를 출력하고 실행(성공/실패 모두 로그)
+          run_cmd(){
+            printf '▶ %s\n' "$*" | tee -a "${LOG_DIR}/echo-run.log"
+            eval "$@" 2>&1 | tee -a "${LOG_DIR}/echo-run.log"
+            local rc=${PIPESTATUS[0]}
+            if [ $rc -eq 0 ]; then echoe "DONE: $*"; else warn "RC=$rc ← $*"; fi
+            return $rc
+          }
+          SH
+          . /tmp/echo_helpers.sh
+          echoe "Echo helpers loaded"
+      - name: Actor 확인(에코)
+        run: |
+          . /tmp/echo_helpers.sh
+          run_cmd "echo actor='${{ github.actor }}'"
+      - id: decide
+        name: Copilot 봇이면 스킵(에코)
+        run: |
+          . /tmp/echo_helpers.sh
+          RUN="true"; REASON=""
           if [ "${{ github.actor }}" = "copilot-swe-agent[bot]" ]; then
-            RUN="false"
-            REASON="copilot-swe-agent[bot] 트리거 → 스킵"
+            RUN="false"; REASON="copilot-swe-agent[bot] 트리거 → 스킵"
+            warn "$REASON"
+          else
+            echoe "정상 실행 대상"
           fi
           echo "run=$RUN" >> "$GITHUB_OUTPUT"
           echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+      - name: Guard 로그 업로드(항상)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: guard-logs
+          path: ${{ env.LOG_DIR }}/*
+          if-no-files-found: ignore
+          retention-days: 14
 
-  main:
-    name: "Main — 실제 작업 수행"
+  prep:
+    name: "Prep — 체크아웃/디렉토리/도구"
     needs: [guard]
     if: ${{ needs.guard.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - name: "체크아웃"
-        uses: actions/checkout@v4
-
-      - name: "런타임 로그 디렉터리 준비"
-        id: prep_logs
+      - uses: actions/checkout@v4
+      - name: 에코 디렉토리/플레이스홀더 생성
         run: |
-          LOG_DIR="${RUNNER_TEMP}/runtime-logs"
-          mkdir -p "$LOG_DIR"
-          echo "LOG_DIR=$LOG_DIR" >> "$GITHUB_ENV"
-          # 최소 빈 파일 보장 (업로더가 경로 없다고 실패하지 않도록)
-          : > "$LOG_DIR/.keep"
-
-      - name: "입력 파라미터 에코"
+          . /tmp/echo_helpers.sh
+          run_cmd "mkdir -p '${ECHO_DIR}/logs' '${ECHO_DIR}/reports' '${LOG_DIR}' '${ART_DIR}'"
+          run_cmd ": > '${LOG_DIR}/.keep'"
+          run_cmd ": > '${ART_DIR}/.keep'"
+          run_cmd "printf '%s\n' 'EchoOps initialized at $(date -u +%F-%T)Z' > '${ECHO_DIR}/logs/init.txt'"
+      - name: Node/JDK/Kubeconform/Syft/Trivy 설치(에코)
         run: |
-          echo "run_tests=${{ inputs.run_tests }}"
-          echo "verbose=${{ inputs.verbose }}"
-          echo "block_reason=${{ inputs.block_reason }}"
-
-      - name: "샘플 작업 실행 (데모)"
-        if: ${{ inputs.run_tests == 'true' }}
+          . /tmp/echo_helpers.sh
+          # JDK
+          if [ "${{ inputs.java_matrix }}" = "false" ]; then
+            echoe "setup-java temurin 21"
+            echo "::group::setup-java"
+            echo "Temurin JDK 21 설치"
+            echo "::endgroup::"
+          fi
+          # 실제 설치는 액션을 사용(별도 스텝)
+      - uses: actions/setup-java@v4
+        if: ${{ inputs.java_matrix == 'false' }}
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+      - name: kubeconform 설치(옵션, 에코)
+        if: ${{ inputs.k8s_lint == 'true' }}
         run: |
-          set -Eeuo pipefail
-          echo "샘플 빌드/테스트/스캔 등을 여기에 배치하세요."
-          echo "예: 빌드 로그" > "${LOG_DIR}/build.log"
-          echo "예: 테스트 로그" > "${LOG_DIR}/test.log"
-          # 데모로 약간의 작업 시간
-          sleep 2
-
-      - name: "차단 사유가 있으면 blocked 로그 생성"
-        if: ${{ inputs.block_reason != '' }}
+          . /tmp/echo_helpers.sh
+          run_cmd "curl -fsSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz -o /tmp/kc.tgz || true"
+          run_cmd "tar -xzf /tmp/kc.tgz -C /tmp || true"
+          run_cmd "sudo mv /tmp/kubeconform /usr/local/bin/kubeconform || true"
+          run_cmd "kubeconform -version || true"
+      - name: Syft/Trivy 설치(옵션, 에코)
+        if: ${{ inputs.enable_security_scan == 'true' }}
         run: |
-          printf '%s\n' "${{ inputs.block_reason }}" > "${LOG_DIR}/blocked.md"
-          jq -n --arg reason "${{ inputs.block_reason }}" \
-            '{blocked: true, reason: $reason, ts: now|todate}' > "${LOG_DIR}/blocked.jsonl" || \
-            printf '{"blocked":true,"reason":"%s"}\n' "${{ inputs.block_reason }}" > "${LOG_DIR}/blocked.jsonl"
-
-      - name: "작업 요약 생성"
+          . /tmp/echo_helpers.sh
+          run_cmd "curl -fsSL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin || true"
+          run_cmd "syft version || true"
+          run_cmd "curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin || true"
+          run_cmd "trivy -v || true"
+      - name: Docker 로그인(있을 때만, 에코)
+        env:
+          REG: ${{ inputs.docker_registry }}
+          USER: ${{ secrets.DOCKER_USER || '' }}
+          PASS: ${{ secrets.DOCKER_PASS || '' }}
         run: |
+          . /tmp/echo_helpers.sh
+          if [ -n "$USER" ] && [ -n "$PASS" ]; then
+            run_cmd "echo '${PASS}' | docker login '${REG}' -u '${USER}' --password-stdin"
+          else
+            warn "Skip docker login (no secrets)"
+          fi
+      - name: Prep 로그 업로드(항상)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: prep-logs
+          path: |
+            ${{ env.LOG_DIR }}/*
+            ${{ env.ECHO_DIR }}/logs/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+  build_java:
+    name: "Build — Java(Maven, Echo)"
+    needs: [prep]
+    if: ${{ needs.guard.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ${{ fromJSON( inputs.java_matrix == 'true' && '["17","21"]' || '["21"]' ) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - name: Maven 캐시(에코)
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            m2-${{ runner.os }}-
+      - name: Maven Build/Test (에코)
+        env:
+          RUN_TESTS: ${{ inputs.run_tests }}
+        run: |
+          . /tmp/echo_helpers.sh
+          set +e
+          if compgen -G "**/pom.xml" > /dev/null; then
+            run_cmd "echo 'Maven on Java ${{ matrix.java }}'"
+            run_cmd "mvn -B -ntp -Dstyle.color=always -DskipTests=$([ \"$RUN_TESTS\" = 'true' ] && echo 'false' || echo 'true') clean package | tee '${LOG_DIR}/maven-${{ matrix.java }}.log'"
+            run_cmd "find . -type f -path '*/target/*.jar' -exec cp -v {} '${ART_DIR}/' \\;"
+          else
+            warn "No pom.xml. Skip Maven."
+          fi
+      - name: Java 산출물/로그 업로드(항상)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-java-${{ matrix.java }}
+          path: |
+            ${{ env.ART_DIR }}/*.jar
+            ${{ env.LOG_DIR }}/maven-${{ matrix.java }}.log
+            ${{ env.LOG_DIR }}/echo-run.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  build_node:
+    name: "Build — Node(PNPM/Yarn/NPM, Echo)"
+    needs: [prep]
+    if: ${{ needs.guard.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 패키지 매니저 감지/설정(에코)
+        run: |
+          . /tmp/echo_helpers.sh
+          if [ -f pnpm-lock.yaml ]; then
+            run_cmd "corepack enable"
+            run_cmd "corepack prepare pnpm@latest --activate"
+            echo "PM=pnpm" >> "$GITHUB_ENV"
+          elif [ -f yarn.lock ]; then
+            run_cmd "corepack enable"
+            run_cmd "corepack prepare yarn@stable --activate"
+            echo "PM=yarn" >> "$GITHUB_ENV"
+          else
+            echo "PM=npm" >> "$GITHUB_ENV"
+            echoe "Using npm"
+          fi
+      - name: 의존성 설치/빌드/테스트(에코)
+        env:
+          RUN_TESTS: ${{ inputs.run_tests }}
+        run: |
+          . /tmp/echo_helpers.sh
+          set +e
+          if [ -f package.json ]; then
+            case "${PM}" in
+              pnpm) run_cmd "pnpm i | tee '${LOG_DIR}/node-install.log'";;
+              yarn) run_cmd "yarn install --immutable | tee '${LOG_DIR}/node-install.log'";;
+              npm)  run_cmd "npm ci || npm i | tee '${LOG_DIR}/node-install.log'";;
+            esac
+            if jq -e '.scripts.build' package.json >/dev/null 2>&1; then
+              run_cmd "${PM} run build | tee '${LOG_DIR}/node-build.log'"
+            fi
+            if [ "${RUN_TESTS}" = "true" ] && jq -e '.scripts.test' package.json >/dev/null 2>&1; then
+              run_cmd "${PM} test --if-present | tee '${LOG_DIR}/node-test.log'"
+            fi
+            [ -d dist ]  && run_cmd "cp -r dist  '${ART_DIR}/node-dist'"
+            [ -d build ] && run_cmd "cp -r build '${ART_DIR}/node-build'"
+          else
+            warn "No package.json. Skip Node."
+          fi
+      - name: Node 산출물/로그 업로드(항상)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-node
+          path: |
+            ${{ env.ART_DIR }}/node-**
+            ${{ env.LOG_DIR }}/node-*.log
+            ${{ env.LOG_DIR }}/echo-run.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  docker:
+    name: "Container — Build(+SBOM/Scan) & Push (Echo)"
+    needs: [prep, build_java, build_node]
+    if: ${{ needs.guard.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker Build(에코)
+        env:
+          IMAGE: ${{ inputs.docker_registry }}/${{ inputs.docker_image }}
+        run: |
+          . /tmp/echo_helpers.sh
+          set +e
+          if compgen -G "Dockerfile*" > /dev/null; then
+            TAG="${IMAGE}:sha-${GITHUB_SHA::7}"
+            run_cmd "docker build -t '${TAG}' ."
+            echo "${TAG}" | tee "${LOG_DIR}/docker-image.txt"
+          else
+            warn "No Dockerfile. Skip build."
+          fi
+      - name: SBOM 생성(syft, 에코)
+        if: ${{ inputs.enable_security_scan == 'true' }}
+        run: |
+          . /tmp/echo_helpers.sh
+          set +e
+          if [ -f "${LOG_DIR}/docker-image.txt" ]; then
+            TAG=$(cat "${LOG_DIR}/docker-image.txt")
+            run_cmd "syft '${TAG}' -o spdx-json > '${ART_DIR}/sbom.json'"
+          else
+            warn "No image tag. Skip SBOM."
+          fi
+      - name: 이미지 스캔(trivy, 에코)
+        if: ${{ inputs.enable_security_scan == 'true' }}
+        run: |
+          . /tmp/echo_helpers.sh
+          set +e
+          if [ -f "${LOG_DIR}/docker-image.txt" ]; then
+            TAG=$(cat "${LOG_DIR}/docker-image.txt")
+            run_cmd "trivy image --no-progress --format table --timeout 5m '${TAG}' | tee '${LOG_DIR}/trivy-image.log'"
+            run_cmd "trivy image --no-progress --format json --timeout 5m  '${TAG}' > '${ART_DIR}/trivy-image.json'"
+          else
+            warn "No image tag. Skip scan."
+          fi
+      - name: Docker Push(옵션, 에코)
+        env:
+          IMAGE: ${{ inputs.docker_registry }}/${{ inputs.docker_image }}
+        run: |
+          . /tmp/echo_helpers.sh
+          set +e
+          if [ -f "${LOG_DIR}/docker-image.txt" ]; then
+            TAG=$(cat "${LOG_DIR}/docker-image.txt")
+            run_cmd "docker push '${TAG}' || echo 'push skipped'"
+          else
+            warn "No image tag. Skip push."
+          fi
+      - name: 컨테이너 산출물/로그 업로드(항상)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-and-scans
+          path: |
+            ${{ env.ART_DIR }}/sbom.json
+            ${{ env.ART_DIR }}/trivy-image.json
+            ${{ env.LOG_DIR }}/trivy-image.log
+            ${{ env.LOG_DIR }}/docker-image.txt
+            ${{ env.LOG_DIR }}/echo-run.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  k8s_lint:
+    name: "K8s — Manifest Lint (kubeconform, Echo)"
+    needs: [prep]
+    if: ${{ needs.guard.outputs.run == 'true' && inputs.k8s_lint == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: kubeconform 실행(에코)
+        run: |
+          . /tmp/echo_helpers.sh
+          set +e
+          if ls k8s kubernetes helm -d 1>/dev/null 2>&1; then
+            run_cmd "find k8s kubernetes -type f \\( -name '*.yml' -o -name '*.yaml' \\) -print0 2>/dev/null | xargs -0 -I{} kubeconform -summary -output json {} | tee '${LOG_DIR}/kubeconform.json'"
+          else
+            warn "No k8s/kubernetes dir. Skip lint."
+          fi
+      - name: K8s Lint 로그 업로드(항상)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: k8s-lint
+          path: |
+            ${{ env.LOG_DIR }}/kubeconform.json
+            ${{ env.LOG_DIR }}/echo-run.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release:
+    name: "Release — 번들(placeholder, Echo)"
+    needs: [build_java, build_node, docker, k8s_lint]
+    if: ${{ always() && inputs.create_release == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 패키징(에코)
+        run: |
+          . /tmp/echo_helpers.sh
+          run_cmd "mkdir -p '${ART_DIR}/release'"
+          run_cmd "printf '%s\n' 'Release placeholder at $(date -u +%F-%T)Z' > '${ART_DIR}/release/README.txt'"
+      - name: Release 번들 업로드(항상)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle
+          path: ${{ env.ART_DIR }}/release/**
+          if-no-files-found: ignore
+          retention-days: 7
+
+  collect-logs:
+    name: "Collector — 최종 Echo 로그/요약(항상)"
+    needs: [guard, prep, build_java, build_node, docker, k8s_lint, release]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 플레이스홀더 보장/에코 요약 작성
+        run: |
+          . /tmp/echo_helpers.sh || true
+          mkdir -p "${LOG_DIR}"
+          : > "${LOG_DIR}/placeholder.txt"
           {
-            echo "## 요약"
+            echo "guard.run=${{ needs.guard.outputs.run }}"
+            echo "guard.reason=${{ needs.guard.outputs.reason }}"
+            echo "actor=${{ github.actor }}"
+            echo "ref=${{ github.ref }}"
+            echo "run_id=${{ github.run_id }}"
+          } | tee "${LOG_DIR}/guard.out"
+          if [ -n "${{ inputs.block_reason }}" ]; then
+            printf '%s\n' "${{ inputs.block_reason }}" > "${LOG_DIR}/blocked.md"
+            command -v jq >/dev/null 2>&1 && jq -n --arg reason "${{ inputs.block_reason }}" '{blocked:true, reason:$reason, ts: now|todate}' > "${LOG_DIR}/blocked.jsonl" || printf '{"blocked":true,"reason":"%s"}\n' "${{ inputs.block_reason }}" > "${LOG_DIR}/blocked.jsonl"
+          fi
+          {
+            echo "## 최종 요약"
             echo "- Actor: **${{ github.actor }}**"
             echo "- Workflow: **${{ github.workflow }}**"
             echo "- Ref: **${{ github.ref }}**"
             echo "- Run ID: **${{ github.run_id }}**"
-            echo "- LOG_DIR: **${LOG_DIR}**"
             if [ -s "${LOG_DIR}/blocked.md" ]; then
               echo ""
               echo "### 🚫 차단 사유"
               sed 's/^/- /' "${LOG_DIR}/blocked.md"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: "런타임 로그 업로드(동일 잡)"
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: runtime-logs-injob
-          path: ${{ env.LOG_DIR }}/*
-          if-no-files-found: ignore
-          retention-days: 14
-
-  collect-logs:
-    name: "Collector — 최종 로그 수집/업로드(항상)"
-    needs: [guard, main]
-    if: ${{ always() }}   # 앞 잡 실패/취소여도 항상 실행
-    runs-on: ubuntu-latest
-    steps:
-      - name: "최종 로그 디렉터리 준비(+플레이스홀더)"
-        run: |
-          LOG_DIR="${RUNNER_TEMP}/runtime-logs"
-          mkdir -p "$LOG_DIR"
-          : > "$LOG_DIR/placeholder.txt"
-          echo "LOG_DIR=$LOG_DIR" >> "$GITHUB_ENV"
-
-      - name: "가드 출력 기록(디버그에 유용)"
-        run: |
-          {
-            echo "guard.run=${{ needs.guard.outputs.run }}"
-            echo "guard.reason=${{ needs.guard.outputs.reason }}"
-          } | tee "${LOG_DIR}/guard.out"
-
-      - name: "최종 로그 업로드(없어도 실패 안 함)"
+      - name: 최종 로그 업로드(항상)
         uses: actions/upload-artifact@v4
         with:
           name: runtime-logs-final
