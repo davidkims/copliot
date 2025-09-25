@@ -69,12 +69,12 @@ permissions:
   contents: read
   actions: read
 
-# 주의: runner.temp는 여기(최상단 env)에서 사용할 수 없습니다.
+# 주의: runner.temp는 최상단 env에서 사용할 수 없습니다.
 env:
   ECHO_DIR: .github/echo
   ECHO_OK:  "[OK]"
-  ECHO_WARN:"[WARN]"
-  ECHO_FAIL:"[FAIL]"
+  ECHO_WARN: "[WARN]"
+  ECHO_FAIL: "[FAIL]"
 
 jobs:
   guard:
@@ -88,7 +88,6 @@ jobs:
         run: |
           echo "LOG_DIR=$RUNNER_TEMP/runtime-logs" >> "$GITHUB_ENV"
           echo "ART_DIR=$RUNNER_TEMP/artifacts"   >> "$GITHUB_ENV"
-
       - name: Echo Helpers 설치
         run: |
           mkdir -p "${LOG_DIR}" "${ART_DIR}"
@@ -107,12 +106,10 @@ jobs:
           SH
           . /tmp/echo_helpers.sh
           echoe "Echo helpers loaded"
-
       - name: Actor 확인(에코)
         run: |
           . /tmp/echo_helpers.sh
           run_cmd "echo actor='${{ github.actor }}'"
-
       - id: decide
         name: Copilot 봇이면 스킵(에코)
         run: |
@@ -126,7 +123,6 @@ jobs:
           fi
           echo "run=$RUN" >> "$GITHUB_OUTPUT"
           echo "reason=$REASON" >> "$GITHUB_OUTPUT"
-
       - name: Guard 로그 업로드(항상)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -146,7 +142,6 @@ jobs:
         run: |
           echo "LOG_DIR=$RUNNER_TEMP/runtime-logs" >> "$GITHUB_ENV"
           echo "ART_DIR=$RUNNER_TEMP/artifacts"   >> "$GITHUB_ENV"
-
       - uses: actions/checkout@v4
 
       - name: 에코 디렉토리/플레이스홀더 생성
@@ -156,7 +151,6 @@ jobs:
           : > "${LOG_DIR}/.keep"
           : > "${ART_DIR}/.keep"
           printf '%s\n' "EchoOps initialized at $(date -u +%F-%T)Z" > "${ECHO_DIR}/logs/init.txt"
-
       - name: JDK/Node 설치
         run: |
           echo "설치 스텝 시작"
@@ -177,7 +171,6 @@ jobs:
           tar -xzf /tmp/kc.tgz -C /tmp || true
           sudo mv /tmp/kubeconform /usr/local/bin/kubeconform || true
           kubeconform -version || true
-
       - name: Syft/Trivy 설치(옵션)
         if: ${{ inputs.enable_security_scan == 'true' }}
         run: |
@@ -185,7 +178,6 @@ jobs:
           syft version || true
           curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin || true
           trivy -v || true
-
       - name: Docker 로그인(있을 때만)
         env:
           REG: ${{ inputs.docker_registry }}
@@ -197,7 +189,6 @@ jobs:
           else
             echo "Skip docker login (no secrets)"
           fi
-
       - name: Prep 로그 업로드(항상)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -223,7 +214,6 @@ jobs:
         run: |
           echo "LOG_DIR=$RUNNER_TEMP/runtime-logs" >> "$GITHUB_ENV"
           echo "ART_DIR=$RUNNER_TEMP/artifacts"   >> "$GITHUB_ENV"
-
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
@@ -250,7 +240,6 @@ jobs:
           else
             echo "No pom.xml. Skip Maven."
           fi
-
       - name: Java 산출물/로그 업로드(항상)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -272,7 +261,6 @@ jobs:
         run: |
           echo "LOG_DIR=$RUNNER_TEMP/runtime-logs" >> "$GITHUB_ENV"
           echo "ART_DIR=$RUNNER_TEMP/artifacts"   >> "$GITHUB_ENV"
-
       - uses: actions/checkout@v4
 
       - name: 패키지 매니저 감지/설정
@@ -289,7 +277,6 @@ jobs:
             echo "PM=npm" >> "$GITHUB_ENV"
             echo "Using npm"
           fi
-
       - name: 의존성 설치/빌드/테스트
         env:
           RUN_TESTS: ${{ inputs.run_tests }}
@@ -312,7 +299,6 @@ jobs:
           else
             echo "No package.json. Skip Node."
           fi
-
       - name: Node 산출물/로그 업로드(항상)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -334,7 +320,6 @@ jobs:
         run: |
           echo "LOG_DIR=$RUNNER_TEMP/runtime-logs" >> "$GITHUB_ENV"
           echo "ART_DIR=$RUNNER_TEMP/artifacts"   >> "$GITHUB_ENV"
-
       - uses: actions/checkout@v4
 
       - name: Docker Build
@@ -349,7 +334,6 @@ jobs:
           else
             echo "No Dockerfile. Skip build."
           fi
-
       - name: SBOM 생성(syft)
         if: ${{ inputs.enable_security_scan == 'true' }}
         run: |
@@ -360,7 +344,6 @@ jobs:
           else
             echo "No image tag. Skip SBOM."
           fi
-
       - name: 이미지 스캔(trivy)
         if: ${{ inputs.enable_security_scan == 'true' }}
         run: |
@@ -372,7 +355,6 @@ jobs:
           else
             echo "No image tag. Skip scan."
           fi
-
       - name: Docker Push(옵션)
         env:
           IMAGE: ${{ inputs.docker_registry }}/${{ inputs.docker_image }}
@@ -384,7 +366,6 @@ jobs:
           else
             echo "No image tag. Skip push."
           fi
-
       - name: 컨테이너 산출물/로그 업로드(항상)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -408,7 +389,6 @@ jobs:
         run: |
           echo "LOG_DIR=$RUNNER_TEMP/runtime-logs" >> "$GITHUB_ENV"
           echo "ART_DIR=$RUNNER_TEMP/artifacts"   >> "$GITHUB_ENV"
-
       - uses: actions/checkout@v4
 
       - name: kubeconform 실행
@@ -421,7 +401,6 @@ jobs:
           else
             echo "No k8s/kubernetes dir. Skip lint."
           fi
-
       - name: K8s Lint 로그 업로드(항상)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -441,12 +420,10 @@ jobs:
         run: |
           echo "LOG_DIR=$RUNNER_TEMP/runtime-logs" >> "$GITHUB_ENV"
           echo "ART_DIR=$RUNNER_TEMP/artifacts"   >> "$GITHUB_ENV"
-
       - name: 패키징
         run: |
           mkdir -p "${ART_DIR}/release"
           printf '%s\n' "Release placeholder at $(date -u +%F-%T)Z" > "${ART_DIR}/release/README.txt"
-
       - name: Release 번들 업로드(항상)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -466,7 +443,6 @@ jobs:
         run: |
           echo "LOG_DIR=$RUNNER_TEMP/runtime-logs" >> "$GITHUB_ENV"
           echo "ART_DIR=$RUNNER_TEMP/artifacts"   >> "$GITHUB_ENV"
-
       - name: 플레이스홀더 보장/요약
         run: |
           mkdir -p "${LOG_DIR}"
@@ -494,7 +470,6 @@ jobs:
               sed 's/^/- /' "${LOG_DIR}/blocked.md"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-
       - name: 최종 로그 업로드(항상)
         uses: actions/upload-artifact@v4
         with:
