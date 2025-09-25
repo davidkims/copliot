@@ -1,0 +1,150 @@
+name: "🛡️ Copilot-Safe Run + Logs Always Upload"
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_tests:
+        description: "샘플 작업/테스트 실행 여부"
+        required: true
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+      block_reason:
+        description: "차단/중단 사유(비우면 정상 진행)"
+        required: false
+        default: ""
+      verbose:
+        description: "자세한 로그"
+        required: true
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+  push:
+    branches: ["main"]
+
+# 중복 실행 시 이전 런 자동 취소(원치 않으면 false)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 최소 권한 원칙
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: "Guard — 봇/중복/환경 체크"
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - name: "실행자 표시"
+        run: echo "actor=${{ github.actor }}"
+
+      - id: decide
+        name: "Copilot 봇 실행 시 스킵 결정"
+        run: |
+          RUN="true"
+          REASON=""
+          if [ "${{ github.actor }}" = "copilot-swe-agent[bot]" ]; then
+            RUN="false"
+            REASON="copilot-swe-agent[bot] 트리거 → 스킵"
+          fi
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"
+          echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+
+  main:
+    name: "Main — 실제 작업 수행"
+    needs: [guard]
+    if: ${{ needs.guard.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: "체크아웃"
+        uses: actions/checkout@v4
+
+      - name: "런타임 로그 디렉터리 준비"
+        id: prep_logs
+        run: |
+          LOG_DIR="${RUNNER_TEMP}/runtime-logs"
+          mkdir -p "$LOG_DIR"
+          echo "LOG_DIR=$LOG_DIR" >> "$GITHUB_ENV"
+          # 최소 빈 파일 보장 (업로더가 경로 없다고 실패하지 않도록)
+          : > "$LOG_DIR/.keep"
+
+      - name: "입력 파라미터 에코"
+        run: |
+          echo "run_tests=${{ inputs.run_tests }}"
+          echo "verbose=${{ inputs.verbose }}"
+          echo "block_reason=${{ inputs.block_reason }}"
+
+      - name: "샘플 작업 실행 (데모)"
+        if: ${{ inputs.run_tests == 'true' }}
+        run: |
+          set -Eeuo pipefail
+          echo "샘플 빌드/테스트/스캔 등을 여기에 배치하세요."
+          echo "예: 빌드 로그" > "${LOG_DIR}/build.log"
+          echo "예: 테스트 로그" > "${LOG_DIR}/test.log"
+          # 데모로 약간의 작업 시간
+          sleep 2
+
+      - name: "차단 사유가 있으면 blocked 로그 생성"
+        if: ${{ inputs.block_reason != '' }}
+        run: |
+          printf '%s\n' "${{ inputs.block_reason }}" > "${LOG_DIR}/blocked.md"
+          jq -n --arg reason "${{ inputs.block_reason }}" \
+            '{blocked: true, reason: $reason, ts: now|todate}' > "${LOG_DIR}/blocked.jsonl" || \
+            printf '{"blocked":true,"reason":"%s"}\n' "${{ inputs.block_reason }}" > "${LOG_DIR}/blocked.jsonl"
+
+      - name: "작업 요약 생성"
+        run: |
+          {
+            echo "## 요약"
+            echo "- Actor: **${{ github.actor }}**"
+            echo "- Workflow: **${{ github.workflow }}**"
+            echo "- Ref: **${{ github.ref }}**"
+            echo "- Run ID: **${{ github.run_id }}**"
+            echo "- LOG_DIR: **${LOG_DIR}**"
+            if [ -s "${LOG_DIR}/blocked.md" ]; then
+              echo ""
+              echo "### 🚫 차단 사유"
+              sed 's/^/- /' "${LOG_DIR}/blocked.md"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "런타임 로그 업로드(동일 잡)"
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-logs-injob
+          path: ${{ env.LOG_DIR }}/*
+          if-no-files-found: ignore
+          retention-days: 14
+
+  collect-logs:
+    name: "Collector — 최종 로그 수집/업로드(항상)"
+    needs: [guard, main]
+    if: ${{ always() }}   # 앞 잡 실패/취소여도 항상 실행
+    runs-on: ubuntu-latest
+    steps:
+      - name: "최종 로그 디렉터리 준비(+플레이스홀더)"
+        run: |
+          LOG_DIR="${RUNNER_TEMP}/runtime-logs"
+          mkdir -p "$LOG_DIR"
+          : > "$LOG_DIR/placeholder.txt"
+          echo "LOG_DIR=$LOG_DIR" >> "$GITHUB_ENV"
+
+      - name: "가드 출력 기록(디버그에 유용)"
+        run: |
+          {
+            echo "guard.run=${{ needs.guard.outputs.run }}"
+            echo "guard.reason=${{ needs.guard.outputs.reason }}"
+          } | tee "${LOG_DIR}/guard.out"
+
+      - name: "최종 로그 업로드(없어도 실패 안 함)"
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-logs-final
+          path: ${{ env.LOG_DIR }}/*
+          if-no-files-found: ignore
+          retention-days: 14
