@@ -160,28 +160,46 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          mapfile -t GLOBS < <(printf '%s\n' "${{ inputs.services_glob }}" | tr ' ' '\n' | sed '/^$/d')
+          # 1) 입력이 비었을 때 기본 glob 보강 (push 등)
+          G="${{ inputs.services_glob }}"
+          if [ -z "${G:-}" ]; then
+            G="services/* apps/*"
+          fi
+          # 2) glob 분해
+          mapfile -t GLOBS < <(printf '%s\n' "$G" | tr ' ' '\n' | sed '/^$/d')
           SERVICES=()
+          # 3) 서비스 후보 스캔
           for g in "${GLOBS[@]}"; do
             for p in $g; do
               [ -d "$p" ] || continue
-              if compgen -G "$p/pom.xml" >/dev/null || \
-                 compgen -G "$p/build.gradle*" >/dev/null || \
-                 compgen -G "$p/package.json" >/dev/null || \
-                 compgen -G "$p/pyproject.toml" >/dev/null || \
-                 compgen -G "$p/requirements.txt" >/dev/null || \
-                 compgen -G "$p/go.mod" >/dev/null || \
-                 compgen -G "$p/Cargo.toml" >/dev/null || \
-                 compgen -G "$p/*.csproj" >/dev/null || \
-                 compgen -G "$p/Dockerfile*" >/dev/null || \
+              if compgen -G "$p/pom.xml"           >/dev/null || \
+                 compgen -G "$p/build.gradle*"     >/dev/null || \
+                 compgen -G "$p/package.json"      >/dev/null || \
+                 compgen -G "$p/pyproject.toml"    >/dev/null || \
+                 compgen -G "$p/requirements.txt"  >/dev/null || \
+                 compgen -G "$p/go.mod"            >/dev/null || \
+                 compgen -G "$p/Cargo.toml"        >/dev/null || \
+                 compgen -G "$p/*.csproj"          >/dev/null || \
+                 compgen -G "$p/Dockerfile*"       >/dev/null || \
                  [ -f "$p/downloads.txt" ]; then
                 SERVICES+=("$p")
               fi
             done
           done
+          # 4) 없으면 루트(".")라도
           [[ ${#SERVICES[@]} -eq 0 ]] && SERVICES+=(".")
-          jq -n --argjson arr "$(printf '%s\n' "${SERVICES[@]}" | jq -R . | jq -s .)" '{service: $arr}' | tee "${LOG_DIR}/services.json"
-          echo "matrix=$(cat "${LOG_DIR}/services.json")" >> "$GITHUB_OUTPUT"
+          # 5) matrix JSON을 단일 줄(compact)로 생성
+          MATRIX_JSON=$(printf '%s\n' "${SERVICES[@]}" | jq -R . | jq -s . | jq -c '{service: .}')
+          echo "$MATRIX_JSON" | tee "${LOG_DIR}/services.json"
+          # 6) Outputs에 안전하게 기록(한 줄)
+          echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
+          # 7) 요약
+          {
+            echo "### Discover"
+            echo "- patterns: \`$G\`"
+            echo "- found: ${#SERVICES[@]} service(s)"
+            for s in "${SERVICES[@]}"; do echo "  - \`$s\`"; done
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload discovery logs (always)
         if: ${{ always() }}
@@ -581,7 +599,7 @@ jobs:
           name: service-${{ env.SAFE_SERVICE }}
           path: |
             ${{ env.ART_DIR }}/**
-            ${{ env.DL_DIR }}/**/*
+            ${{ env.DL_DIR }}/**
             ${{ env.LOG_DIR }}/echo-${{ env.SAFE_SERVICE }}.log
             ${{ env.LOG_DIR }}/node-*.log
             ${{ env.LOG_DIR }}/maven-*.log
